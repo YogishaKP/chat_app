@@ -10,6 +10,7 @@ load_dotenv()
 
 def utcnow():
     """Returns the current UTC date and time (Timezone-Aware)."""
+    print("date noww",datetime.now(UTC))
     return datetime.now(UTC)
 
 app = FastAPI()
@@ -27,15 +28,22 @@ ALGORITHM = "HS256"
 
 # In memory storage
 otp_store = {}
+users = {}
 
 # Request Models
-class PhoneRequest(BaseModel):
+class RegisterRequest(BaseModel):
     phone: str
 
-class VerifyOTPRequest(BaseModel):
+class LoginRequest(BaseModel):
+    phone: str
+
+class VerifyRequest(BaseModel):
     phone: str
     otp: str
 
+class RefreshRequest(BaseModel):
+    refresh_token: str
+    
 # Helpers
 def generate_otp():
     return str(random.randint(100000,999999))
@@ -61,8 +69,23 @@ def create_refresh_token(phone: str):
     return jwt.encode(payload, JWT_SECRET, algorithm=ALGORITHM)
 
 # Routes
-@app.post("/generate-otp")
-def generate_otp_api(data: PhoneRequest):
+@app.post("/api/v1/auth/register")
+def register(data: RegisterRequest):
+
+    # check for existing user
+    if data.phone in users:
+        raise HTTPException(
+            status_code=400,
+            detail="User already exists"
+        )
+    
+    # creaate user
+    users[data.phone] = {
+        "phone": data.phone,
+        "verified": False
+    }
+
+    # generate otp
     otp = generate_otp()
 
     otp_store[data.phone]={
@@ -70,16 +93,42 @@ def generate_otp_api(data: PhoneRequest):
         "expires_at": utcnow() + timedelta(minutes=5)
     }
 
-    print(f"OTP for {data.phone}: {otp}")
+    # simulate sms
+    print(f"Registered OTP for {data.phone}: {otp}")
 
     return {
-        "message": "OTP sent successfully",
-        "otp_is": otp
+        "message":"User Registered. OTP sent",
+        "otp":otp
     }
 
-@app.post("/verify-otp")
-def verify_otp_api(data: VerifyOTPRequest):
-    print(otp_store)
+@app.post("/api/v1/auth/login")
+def login(data: LoginRequest):
+
+    # check user exists
+    if data.phone not in users:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found"
+        )
+    
+    # generate otp
+    otp = generate_otp()
+
+    otp_store[data.phone]={
+        "otp":otp,
+        "expires_at": utcnow() + timedelta(minutes=5)
+    }
+
+    # simulate sms
+    print(f"LOGIN OTP for {data.phone}: {otp}")
+
+    return {
+        "message": "OTP Sent for Login",
+        "otp": otp
+    }
+
+@app.post("/api/v1/auth/verify")
+def vrify(data: VerifyRequest):
 
     record = otp_store.get(data.phone)
 
@@ -89,28 +138,72 @@ def verify_otp_api(data: VerifyOTPRequest):
             detail="OTP not found"
         )
     
+    # check expiry
     if utcnow() > record["expires_at"]:
         raise HTTPException(
             status_code=400,
-            data="OTP expired"
+            detail="OTP expired"
         )
     
+    # check otp
     if record["otp"] != data.otp:
         raise HTTPException(
             status_code=400,
-            data="Invalid OTP"
+            detail="Invalid OTP"
         )
     
-    # OTP verified
+    # mark as verified
+    users[data.phone]["verified"] = True
+
+    # create tokens
     access_token = create_access_token(data.phone)
     refresh_token = create_refresh_token(data.phone)
 
-    # Remove otp after successful verification
+    # remove otp
     del otp_store[data.phone]
 
     return {
-        "message": "User verified",
+        "message": "OTP Verified",
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer"
     }
+
+@app.post("/api/v1/auth/refresh")
+def refresh(data: RefreshRequest):
+    
+    try:
+        payload = jwt.decode(
+            data.refresh_token,
+            JWT_SECRET,
+            algorithms=[ALGORITHM]
+        )
+
+        # validate token type
+        if payload["type"] != "refresh":
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid token type"
+            )
+        
+        phone = payload["sub"]
+
+        # create new access token
+        access_token = create_access_token(phone)
+
+        return {
+            "access_token": access_token,
+            "token_type": "bearer"
+        }
+    
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=401,
+            detail="Refresh token expired"
+        )
+    
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid refresh token"
+        )
