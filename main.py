@@ -5,12 +5,12 @@ import random
 import jwt
 import os
 from dotenv import load_dotenv
+import uuid
 
 load_dotenv()
 
 def utcnow():
     """Returns the current UTC date and time (Timezone-Aware)."""
-    print("date noww",datetime.now(UTC))
     return datetime.now(UTC)
 
 app = FastAPI()
@@ -43,6 +43,10 @@ class VerifyRequest(BaseModel):
 
 class RefreshRequest(BaseModel):
     refresh_token: str
+
+class UpdateProfileRequest(BaseModel):
+    name: str
+    email: str
     
 # Helpers
 def generate_otp():
@@ -81,8 +85,12 @@ def register(data: RegisterRequest):
     
     # creaate user
     users[data.phone] = {
+        "user_id": str(uuid.uuid4()),
         "phone": data.phone,
-        "verified": False
+        "name": None,
+        "email": None,
+        "verified": False,
+        "created_at": utcnow()
     }
 
     # generate otp
@@ -166,7 +174,8 @@ def vrify(data: VerifyRequest):
         "message": "OTP Verified",
         "access_token": access_token,
         "refresh_token": refresh_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "user_id": users[data.phone]["user_id"]
     }
 
 @app.post("/api/v1/auth/refresh")
@@ -207,3 +216,59 @@ def refresh(data: RefreshRequest):
             status_code=401,
             detail="Invalid refresh token"
         )
+    
+@app.get("/api/v1/users/{user_id}")
+def get_user_profile(user_id: str):
+
+    # find user by user id
+    user = None
+
+    for stored_user in users.values():
+        if stored_user["user_id"] == user_id:
+            user = stored_user
+            break
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found"
+        )
+    
+    return {
+        "user_id": user["user_id"],
+        "phone": user["phone"],
+        "name": user["name"],
+        "email": user["email"],
+        "verified": user["verified"]
+    }
+
+@app.put("/api/v1/users/{user_id}")
+def update_user_profile(user_id: str, data:UpdateProfileRequest):
+
+    # find user by user_id
+    user = None
+
+    for stored_user in users.values():
+        if stored_user["user_id"] == user_id:
+            user = stored_user
+            break
+    
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found"
+        )
+    
+    # update fields
+    user["name"] = data.name
+    user["email"] = data.email
+
+    return {
+        "message": "Profile updated successfully",
+        "user": {
+            "user_id": user["user_id"],
+            "phone": user["phone"],
+            "name": user["name"],
+            "email": user["email"]
+        }
+    }
