@@ -6,6 +6,8 @@ import jwt
 import os
 from dotenv import load_dotenv
 import uuid
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends
 
 load_dotenv()
 
@@ -25,6 +27,8 @@ ACCESS_TOKEN_EXPIRE_MINUTES = os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES",15)
 REFRESH_TOKEN_EXPIRE_DAYS = os.getenv("REFRESH_TOKEN_EXPIRE_DAYS",7)
 
 ALGORITHM = "HS256"
+
+security = HTTPBearer()
 
 # In memory storage
 otp_store = {}
@@ -54,8 +58,10 @@ def generate_otp():
 
 def create_access_token(phone: str):
     expire = utcnow() + timedelta(minutes=int(ACCESS_TOKEN_EXPIRE_MINUTES))
+    
+
     payload = {
-        "sub": phone,
+        "sub": users[phone]["user_id"],
         "type": "access",
         "exp": expire
     }
@@ -65,16 +71,58 @@ def create_access_token(phone: str):
 def create_refresh_token(phone: str):
     expire = utcnow() + timedelta(days=int(REFRESH_TOKEN_EXPIRE_DAYS))
     payload = {
-        "sub": phone,
+        "sub": users[phone]["user_id"],
         "type": "refresh",
         "exp": expire
     }
 
     return jwt.encode(payload, JWT_SECRET, algorithm=ALGORITHM)
 
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+
+    try:
+        payload = jwt.decode(
+            token,
+            JWT_SECRET,
+            algorithms=[ALGORITHM]
+        )
+
+        # validate token type
+        if payload["type"] != "access":
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid access token"
+            )
+        
+        token_user_id = payload["sub"]
+
+        # find user
+        for user in users.values():
+            if user["user_id"] == token_user_id:
+                return user
+        
+        raise HTTPException(
+            status_code=404,
+            detail="User not found"
+        )
+    
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=401,
+            detail="Access token expired"
+        )
+    
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid token"
+        )
+
 # Routes
 @app.post("/api/v1/auth/register")
 def register(data: RegisterRequest):
+
 
     # check for existing user
     if data.phone in users:
@@ -92,6 +140,7 @@ def register(data: RegisterRequest):
         "verified": False,
         "created_at": utcnow()
     }
+
 
     # generate otp
     otp = generate_otp()
@@ -187,6 +236,7 @@ def refresh(data: RefreshRequest):
             JWT_SECRET,
             algorithms=[ALGORITHM]
         )
+        print("pay",payload)
 
         # validate token type
         if payload["type"] != "refresh":
@@ -195,7 +245,11 @@ def refresh(data: RefreshRequest):
                 detail="Invalid token type"
             )
         
-        phone = payload["sub"]
+        user_id = payload["sub"]
+
+        for user in users.values():
+            if user["user_id"] == user_id:
+                phone = user["phone"]
 
         # create new access token
         access_token = create_access_token(phone)
@@ -218,57 +272,45 @@ def refresh(data: RefreshRequest):
         )
     
 @app.get("/api/v1/users/{user_id}")
-def get_user_profile(user_id: str):
+def get_user_profile(user_id:str, current_user = Depends(get_current_user)):
 
-    # find user by user id
-    user = None
-
-    for stored_user in users.values():
-        if stored_user["user_id"] == user_id:
-            user = stored_user
-            break
-
-    if not user:
+    # compare token user_id vs url user_id
+    if current_user["user_id"] != user_id:
         raise HTTPException(
-            status_code=404,
-            detail="User not found"
+            status_code=403,
+            detail="Access denied"
         )
-    
+
     return {
-        "user_id": user["user_id"],
-        "phone": user["phone"],
-        "name": user["name"],
-        "email": user["email"],
-        "verified": user["verified"]
+        "user_id": current_user["user_id"],
+        "phone": current_user["phone"],
+        "name": current_user["name"],
+        "email": current_user["email"],
+        "verified": current_user["verified"]
     }
 
 @app.put("/api/v1/users/{user_id}")
-def update_user_profile(user_id: str, data:UpdateProfileRequest):
+def update_user_profile(user_id: str, data:UpdateProfileRequest, current_user = Depends(get_current_user)):
 
-    # find user by user_id
-    user = None
-
-    for stored_user in users.values():
-        if stored_user["user_id"] == user_id:
-            user = stored_user
-            break
-    
-    if not user:
+    # compare token user_id vs url user_id
+    if current_user["user_id"] != user_id:
         raise HTTPException(
-            status_code=404,
-            detail="User not found"
+            status_code="403",
+            detail="Access denied"
         )
-    
-    # update fields
-    user["name"] = data.name
-    user["email"] = data.email
+
+    # update profile
+    current_user["name"] = data.name
+    current_user["email"] = data.email
+    current_user["last_updated"] = utcnow()
 
     return {
         "message": "Profile updated successfully",
         "user": {
-            "user_id": user["user_id"],
-            "phone": user["phone"],
-            "name": user["name"],
-            "email": user["email"]
+            "user_id": current_user["user_id"],
+            "phone": current_user["phone"],
+            "name": current_user["name"],
+            "email": current_user["email"],
+            "last_updated": current_user["last_updated"]
         }
     }
